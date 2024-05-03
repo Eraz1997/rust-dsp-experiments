@@ -7,45 +7,39 @@
 //! precisely synchronised.
 
 use clap::Parser;
+use cpal::{BufferSize, FrameCount};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::{Consumer, Producer};
 use ringbuf::HeapRb;
 use ringbuf::traits::Split;
 
 // TODO: use dasp for more powerful DSP
+// TODO: Add link to CPAL README for ASIO setup
+// TODO: Add `cargo run --release --features jack (or asio)` to doc
 
-#[derive(Parser, Debug)]
-#[command(version, about = "CPAL feedback example", long_about = None)]
-struct Opt {
-    /// The input audio device to use
-    #[arg(short, long, value_name = "IN", default_value_t = String::from("default"))]
+enum Driver {
+    Default,
+    #[cfg(target_os = "windows")]
+    Asio,
+    #[cfg(target_os = "linux")]
+    Jack,
+}
+
+struct Settings {
+    buffer_size: i32,
     input_device: String,
-
-    /// The output audio device to use
-    #[arg(short, long, value_name = "OUT", default_value_t = String::from("default"))]
     output_device: String,
-
-    /// Specify the delay between input and output
-    #[arg(short, long, value_name = "DELAY_MS", default_value_t = 150.0)]
-    latency: f32,
-
-    /// Use the JACK host
-    #[cfg(all(
-    any(
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "netbsd"
-    ),
-    feature = "jack"
-    ))]
-    #[arg(short, long)]
-    #[allow(dead_code)]
-    jack: bool,
+    driver: Driver,
 }
 
 fn main() -> anyhow::Result<()> {
-    let opt = Opt::parse();
+    // Get settings
+    let settings = Settings {
+        buffer_size: 128,
+        input_device: "default".to_string(),
+        output_device: "default".to_string(),
+        driver: Driver::Default,
+    };
 
     // Conditionally compile with jack if the feature is specified.
     #[cfg(all(
@@ -59,7 +53,7 @@ fn main() -> anyhow::Result<()> {
     ))]
         // Manually check for flags. Can be passed through cargo with -- e.g.
         // cargo run --release --example beep --features jack -- --jack
-        let host = if opt.jack {
+        let host = if settings.jack {
         cpal::host_from_id(cpal::available_hosts()
             .into_iter()
             .find(|id| *id == cpal::HostId::Jack)
@@ -70,31 +64,35 @@ fn main() -> anyhow::Result<()> {
         cpal::default_host()
     };
 
+    #[cfg(target_os = "windows")]
+    let host = cpal::host_from_id(cpal::HostId::Asio).expect("failed to initialise ASIO host");
+
     #[cfg(any(
     not(any(
     target_os = "linux",
     target_os = "dragonfly",
     target_os = "freebsd",
-    target_os = "netbsd"
+    target_os = "netbsd",
+    target_os = "windows"
     )),
     not(feature = "jack")
     ))]
         let host = cpal::default_host();
 
     // Find devices.
-    let input_device = if opt.input_device == "default" {
+    let input_device = if settings.input_device == "default" {
         host.default_input_device()
     } else {
         host.input_devices()?
-            .find(|x| x.name().map(|y| y == opt.input_device).unwrap_or(false))
+            .find(|x| x.name().map(|y| y == settings.input_device).unwrap_or(false))
     }
         .expect("failed to find input device");
 
-    let output_device = if opt.output_device == "default" {
+    let output_device = if settings.output_device == "default" {
         host.default_output_device()
     } else {
         host.output_devices()?
-            .find(|x| x.name().map(|y| y == opt.output_device).unwrap_or(false))
+            .find(|x| x.name().map(|y| y == settings.output_device).unwrap_or(false))
     }
         .expect("failed to find output device");
 
@@ -102,10 +100,11 @@ fn main() -> anyhow::Result<()> {
     println!("Using output device: \"{}\"", output_device.name()?);
 
     // We'll try and use the same configuration between streams to keep it simple.
-    let config: cpal::StreamConfig = input_device.default_input_config()?.into();
+    let mut config: cpal::StreamConfig = input_device.default_input_config()?.into();
+    config.buffer_size = BufferSize::Fixed(FrameCount {});
 
     // Create a delay in case the input and output devices aren't synced.
-    let latency_frames = (opt.latency / 1_000.0) * config.sample_rate.0 as f32;
+    let latency_frames = (settings.latency / 1_000.0) * config.sample_rate.0 as f32;
     let latency_samples = latency_frames as usize * config.channels as usize;
 
     // The buffer to share samples
@@ -159,7 +158,7 @@ fn main() -> anyhow::Result<()> {
     // Play the streams.
     println!(
         "Starting the input and output streams with `{}` milliseconds of latency.",
-        opt.latency
+        settings.latency
     );
     input_stream.play()?;
     output_stream.play()?;

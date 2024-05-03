@@ -6,14 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-cpal = "0.15.3"
 dasp = "0.11.0"
 anyhow = "1.0.44"
 clap = { version = "4.5.4", features = ["derive"] }
 ringbuf = "0.4.0"
-
-[features]
-jack = []
+cpal = { version = "0.15.3", features = ["jack", "asio"] }
 
 [target.armv7-unknown-linux-gnueabihf]  # This might need to go under ./.cargo/config
 linker = "arm-linux-gnueabihf-gcc"
